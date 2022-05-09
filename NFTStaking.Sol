@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.13;
+
+import "./DDEIsERC20.sol";
+import "./DDEIsERC721A.sol";
+
+contract NFTStaking {
+    uint256 public totalStaked;
+
+    struct Staking {
+        uint24 tokenId;
+        uint48 stakingStartTime;
+        address owner;
+    }
+
+    //TokenId => Stacking
+
+    mapping(uint256 => Staking) NFTsStaked;
+
+    uint256 rewardsPerHour = 10000;
+
+    DDEIsERC20 token;
+    DDEIsERC721A nft;
+
+    event Staked(address indexed owner, uint256 tokenId, uint256 value);
+    event Unstaked(address indexed owner, uint256 tokenId, uint256 value);
+    event Claimed(address indexed owner, uint256 amount);
+
+    constructor(DDEIsERC20 _token, DDEIsERC721A _nft) {
+        token = _token;
+        nft = _nft;
+    }
+
+    function Stake(uint256[] calldata tokenIds) external {
+        uint256 tokenId;
+        totalStaked += tokenIds.length;
+
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            tokenId = tokenIds[i];
+            require(nft.ownerOf(tokenId) == msg.sender, "Not the owner");
+            require(
+                NFTsStaked[tokenId].stakingStartTime == 0,
+                "Already Staked"
+            );
+
+            nft.transferFrom(msg.sender, address(this), tokenId);
+            emit Staked(msg.sender, tokenId, block.timestamp);
+
+            NFTsStaked[tokenId] = Staking({
+                tokenId: uint24(tokenId),
+                stakingStartTime: uint48(block.timestamp),
+                owner: msg.sender
+            });
+        }
+    }
+
+    function _unstakeMany(address owner, uint256[] calldata tokenIds) internal {
+        uint256 tokenId;
+        totalStaked -= tokenIds.length;
+
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            tokenId = tokenIds[i];
+            require(NFTsStaked[tokenId].owner == msg.sender, "Not the owner");
+
+            emit Unstaked(owner, tokenId, block.timestamp);
+            delete NFTsStaked[tokenId];
+
+            nft.transferFrom(address(this), owner, tokenId);
+        }
+    }
+
+    function claim(uint256[] calldata tokenIds) external {
+        _claim(msg.sender, tokenIds, false);
+    }
+
+    function unstake(uint256[] calldata tokenIds) external {
+        _claim(msg.sender, tokenIds, true);
+    }
+
+    function _claim(
+        address owner,
+        uint256[] calldata tokenIds,
+        bool _unstake
+    ) internal {
+        uint256 tokenId;
+        uint256 earned;
+        uint256 totalEarned;
+
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            tokenId = tokenIds[i];
+            Staking memory thisStake = NFTsStaked[tokenId];
+            require(
+                thisStake.owner == owner,
+                "Not the owner, you cannot claim the awards"
+            );
+
+            uint256 stakingStartTime = thisStake.stakingStartTime;
+
+            earned =
+                ((block.timestamp - stakingStartTime) * rewardsPerHour) /
+                3600;
+            totalEarned += earned;
+
+            NFTsStaked[tokenId] = Staking({
+                tokenId: uint24(tokenId),
+                stakingStartTime: uint48(block.timestamp),
+                owner: owner
+            });
+        }
+
+        if (totalEarned > 0) {
+            token.mint(owner, totalEarned);
+        }
+
+        if (_unstake) {
+            _unstakeMany(owner, tokenIds);
+        }
+
+        emit Claimed(owner, totalEarned);
+    }
+
+    function getRewardAmount(address owner, uint256[] calldata tokenIds)
+        external
+        view
+        returns (uint256)
+    {
+        uint256 tokenId;
+        uint256 earned;
+        uint256 totalEarned;
+
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            tokenId = tokenIds[i];
+            Staking memory thisStake = NFTsStaked[tokenId];
+            require(
+                thisStake.owner == owner,
+                "Not the owner, you cannot claim the awards"
+            );
+            uint256 stakingStartTime = thisStake.stakingStartTime;
+            earned =
+                ((block.timestamp - stakingStartTime) * rewardsPerHour) /
+                3600;
+            totalEarned += earned;
+        }
+
+        return totalEarned;
+    }
+
+    function tokenStakedByOwner(address owner)
+        external
+        view
+        returns (uint256[] memory)
+    {
+        uint256 totalSupply = nft.totalSupply();
+        uint256[] memory tmp = new uint256[](totalSupply);
+        uint256 index = 0;
+
+        for (uint256 i = 0; i < totalSupply; i++) {
+            if (NFTsStaked[i].owner == owner) {
+                tmp[index] = i;
+                index++;
+            }
+        }
+
+        uint256[] memory tokens = new uint256[](index);
+
+        for (uint256 i = 0; i < index; i++) {
+            tokens[i] = tmp[i];
+        }
+
+        return tokens;
+    }
+}
